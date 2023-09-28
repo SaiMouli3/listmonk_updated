@@ -27,14 +27,14 @@ import (
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/paginator"
 	"github.com/knadh/stuffbin"
+	"github.com/robfig/cron/v3"
+	"gopkg.in/gomail.v2"
 )
 
 const (
 	emailMsgr = "email"
 )
 
-// App contains the "global" components that are
-// passed around, especially through HTTP handlers.
 type App struct {
 	core       *core.Core
 	fs         stuffbin.FileSystem
@@ -55,20 +55,13 @@ type App struct {
 	log        *log.Logger
 	bufLog     *buflog.BufLog
 
-	// Channel for passing reload signals.
-	chReload chan os.Signal
-
-	// Global variable that stores the state indicating that a restart is required
-	// after a settings update.
+	chReload     chan os.Signal
 	needsRestart bool
-
-	// Global state that stores data on an available remote update.
-	update *AppUpdate
+	update       *AppUpdate
 	sync.Mutex
 }
 
 var (
-	// Buffered log writer for storing N lines of log entries for the UI.
 	evStream = events.New()
 	bufLog   = buflog.New(5000)
 	lo       = log.New(io.MultiWriter(os.Stdout, bufLog, evStream.ErrWriter()), "",
@@ -79,13 +72,9 @@ var (
 	db      *sqlx.DB
 	queries *models.Queries
 
-	// Compile-time variables.
 	buildString   string
 	versionString string
 
-	// If these are set in build ldflags and static assets (*.sql, config.toml.sample. ./frontend)
-	// are not embedded (in make dist), these paths are looked up. The default values before, when not
-	// overridden by build flags, are relative to the CWD at runtime.
 	appDir      string = "."
 	frontendDir string = "frontend"
 )
@@ -93,7 +82,6 @@ var (
 func init() {
 	initFlags()
 
-	// Display version.
 	if ko.Bool("version") {
 		fmt.Println(buildString)
 		os.Exit(0)
@@ -101,7 +89,6 @@ func init() {
 
 	lo.Println(buildString)
 
-	// Generate new config.
 	if ko.Bool("new-config") {
 		path := ko.Strings("config")[0]
 		if err := newConfigFile(path); err != nil {
@@ -112,10 +99,8 @@ func init() {
 		os.Exit(0)
 	}
 
-	// Load config files to pick up the database settings first.
 	initConfigFiles(ko.Strings("config"), ko)
 
-	// Load environment variables and merge into the loaded config.
 	if err := ko.Load(env.Provider("LISTMONK_", ".", func(s string) string {
 		return strings.Replace(strings.ToLower(
 			strings.TrimPrefix(s, "LISTMONK_")), "__", ".", -1)
@@ -123,23 +108,18 @@ func init() {
 		lo.Fatalf("error loading config from env: %v", err)
 	}
 
-	// Connect to the database, load the filesystem to read SQL queries.
 	db = initDB()
 	fs = initFS(appDir, frontendDir, ko.String("static-dir"), ko.String("i18n-dir"))
 
-	// Installer mode? This runs before the SQL queries are loaded and prepared
-	// as the installer needs to work on an empty DB.
 	if ko.Bool("install") {
-		// Save the version of the last listed migration.
 		install(migList[len(migList)-1].version, db, fs, !ko.Bool("yes"), ko.Bool("idempotent"))
 		os.Exit(0)
 	}
 
-	// Check if the DB schema is installed.
 	if ok, err := checkSchema(db); err != nil {
 		log.Fatalf("error checking schema in DB: %v", err)
 	} else if !ok {
-		lo.Fatal("the database does not appear to be setup. Run --install.")
+		lo.Fatal("the database does not appear to be set up. Run --install.")
 	}
 
 	if ko.Bool("upgrade") {
@@ -147,24 +127,82 @@ func init() {
 		os.Exit(0)
 	}
 
-	// Before the queries are prepared, see if there are pending upgrades.
 	checkUpgrade(db)
 
-	// Read the SQL queries from the queries file.
 	qMap := readQueries(queryFilePath, db, fs)
 
-	// Load settings from DB.
 	if q, ok := qMap["get-settings"]; ok {
 		initSettings(q.Query, db, ko)
 	}
 
-	// Prepare queries.
 	queries = prepareQueries(qMap, db, ko)
 }
 
+func sendEmailToSubscribers(db *sqlx.DB, subject string, body string) {
+	// 1. Query the database to retrieve email addresses of all subscribers.
+	var subscribers []string
+	err := db.Select(&subscribers, "SELECT email FROM subscribers")
+	if err != nil {
+		fmt.Println("Error querying subscribers:", err)
+		return
+	}
+
+	// Email configuration
+	from := "saimouli12345678@gmail.com" // Replace with your email address
+	password := "hdel pyso zsqb avte"    // Replace with your email password
+	smtpServer := "smtp.gmail.com"
+	smtpPort := 465
+
+	for _, subscriberEmail := range subscribers {
+		// 2. Send an email to each subscriber.
+		m := gomail.NewMessage()
+		m.SetHeader("From", from)
+		m.SetHeader("To", subscriberEmail) // Use the subscriber's email address
+		m.SetHeader("Subject", subject)    // Use the provided subject
+		m.SetBody("text/html", body)       // Use the provided body
+
+		d := gomail.NewDialer(smtpServer, smtpPort, from, password)
+
+		if err := d.DialAndSend(m); err != nil {
+			fmt.Println("Error sending email to", subscriberEmail, ":", err)
+		} else {
+			fmt.Println("Email sent successfully to", subscriberEmail)
+		}
+	}
+}
+
+// Example usage for sending Monday morning emails.
+func sendMondayMorningEmails(db *sqlx.DB) {
+	subject := "Monday Moods"
+	body := "Have a great start to the week!"
+	sendEmailToSubscribers(db, subject, body)
+}
+
+func sendTuesdayMorningEmails(db *sqlx.DB) {
+	// Implement logic to send Tuesday morning emails here.
+}
+
+func sendWednesdayMorningEmails(db *sqlx.DB) {
+	// Implement logic to send Wednesday morning emails here.
+}
+
+func sendThursdayMorningEmails(db *sqlx.DB) {
+	// Implement logic to send Thursday morning emails here.
+}
+
+func sendFridayMorningEmails(db *sqlx.DB) {
+	// Implement logic to send Friday morning emails here.
+}
+
+func sendSaturdayMorningEmails(db *sqlx.DB) {
+	// Implement logic to send Saturday morning emails here.
+}
+
+func sendSundayMorningEmails(db *sqlx.DB) {
+	// Implement logic to send Sunday morning emails here.
+}
+
 func main() {
-	// Initialize the main app controller that wraps all of the app's
-	// components. This is passed around HTTP handlers.
 	app := &App{
 		fs:         fs,
 		db:         db,
@@ -186,7 +224,6 @@ func main() {
 		}),
 	}
 
-	// Load i18n language map.
 	app.i18n = initI18n(app.constants.Lang, fs)
 	cOpt := &core.Opt{
 		Constants: core.Constants{
@@ -217,59 +254,111 @@ func main() {
 		go app.bounce.Run()
 	}
 
-	// Initialize the default SMTP (`email`) messenger.
 	app.messengers[emailMsgr] = initSMTPMessenger(app.manager)
 
-	// Initialize any additional postback messengers.
 	for _, m := range initPostbackMessengers(app.manager) {
 		app.messengers[m.Name()] = m
 	}
 
-	// Attach all messengers to the campaign manager.
 	for _, m := range app.messengers {
 		app.manager.AddMessenger(m)
 	}
 
-	// Load system information.
 	app.about = initAbout(queries, db)
-
-	// Start the campaign workers. The campaign batches (fetch from DB, push out
-	// messages) get processed at the specified interval.
 	go app.manager.Run()
+
+	fmt.Println("I am here")
+	cron := cron.New()
+
+	// Add a cron job to run sendEmailToSubscribers every minute.
+	_, err := cron.AddFunc("@every 1m", func() {
+		sendEmailToSubscribers(app.db, "subject", "body") // Use app.db instead of db
+	})
+	if err != nil {
+		fmt.Println("Error adding cron job:", err)
+		return
+	}
+
+	// Schedule a function to stop the cron job after 2 minutes.
+	time.AfterFunc(1*time.Minute, func() {
+		cron.Stop()
+		fmt.Println("Cron job stopped after 1 minutes.")
+	})
+
+	// Schedule functions for sending emails on specific days of the week.
+	_, err = cron.AddFunc("0 0 * * MON", func() {
+		sendMondayMorningEmails(app.db)
+	})
+	if err != nil {
+		fmt.Println("Error adding Monday cron job:", err)
+	}
+
+	_, err = cron.AddFunc("0 0 * * TUE", func() {
+		sendTuesdayMorningEmails(app.db)
+	})
+	if err != nil {
+		fmt.Println("Error adding Tuesday cron job:", err)
+	}
+
+	_, err = cron.AddFunc("0 0 * * WED", func() {
+		sendWednesdayMorningEmails(app.db)
+	})
+	if err != nil {
+		fmt.Println("Error adding Wednesday cron job:", err)
+	}
+
+	_, err = cron.AddFunc("0 0 * * THU", func() {
+		sendThursdayMorningEmails(app.db)
+	})
+	if err != nil {
+		fmt.Println("Error adding Thursday cron job:", err)
+	}
+
+	_, err = cron.AddFunc("0 0 * * FRI", func() {
+		sendFridayMorningEmails(app.db)
+	})
+	if err != nil {
+		fmt.Println("Error adding Friday cron job:", err)
+	}
+
+	_, err = cron.AddFunc("0 0 * * SAT", func() {
+		sendSaturdayMorningEmails(app.db)
+	})
+	if err != nil {
+		fmt.Println("Error adding Saturday cron job:", err)
+	}
+
+	_, err = cron.AddFunc("0 0 * * SUN", func() {
+		sendSundayMorningEmails(app.db)
+	})
+	if err != nil {
+		fmt.Println("Error adding Sunday cron job:", err)
+	}
+
+	// Start the cron scheduler.
+	cron.Start()
 
 	// Start the app server.
 	srv := initHTTPServer(app)
 
-	// Star the update checker.
 	if ko.Bool("app.check_updates") {
 		go checkUpdates(versionString, time.Hour*24, app)
 	}
 
-	// Wait for the reload signal with a callback to gracefully shut down resources.
-	// The `wait` channel is passed to awaitReload to wait for the callback to finish
-	// within N seconds, or do a force reload.
 	app.chReload = make(chan os.Signal)
 	signal.Notify(app.chReload, syscall.SIGHUP)
 
 	closerWait := make(chan bool)
 	<-awaitReload(app.chReload, closerWait, func() {
-		// Stop the HTTP server.
+		cron.Stop()
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 		srv.Shutdown(ctx)
-
-		// Close the campaign manager.
 		app.manager.Close()
-
-		// Close the DB pool.
 		app.db.DB.Close()
-
-		// Close the messenger pool.
 		for _, m := range app.messengers {
 			m.Close()
 		}
-
-		// Signal the close.
 		closerWait <- true
 	})
 }
